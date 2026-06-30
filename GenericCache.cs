@@ -1,31 +1,57 @@
 public class GenericCache<T>
 {
     private readonly Dictionary<string, CacheItem<T>> _cache = new();
+    private readonly ReaderWriterLockSlim _lock = new();
 
     public void Add(string key, T value, TimeSpan expirationDuration)
     {
-        CacheItem<T> item = new()
+        _lock.EnterWriteLock();
+        try
         {
-            Value = value,
-            ExpirationTime = DateTime.Now.Add(expirationDuration)
-        };
+            CacheItem<T> item = new()
+            {
+                Value = value,
+                ExpirationTime = DateTime.Now.Add(expirationDuration)
+            };
 
-        _cache[key] = item;
+            _cache[key] = item;
+        }
+        finally
+        {
+            _lock.ExitWriteLock();
+        }
     }
 
     public T GetItem(string key)
     {
-        if (_cache.TryGetValue(key, out var cacheItem))
+        _lock.EnterReadLock();
+        try
         {
-            if (cacheItem.IsExpired())
+            if (_cache.TryGetValue(key, out var cacheItem))
             {
-                _cache.Remove(key);
-                throw new KeyNotFoundException($"The item with key '{key}' has expired and has been removed from the cache.");
+                if (cacheItem.IsExpired())
+                {
+                    _lock.ExitReadLock();
+                    _lock.EnterWriteLock();
+                    try
+                    {
+                        _cache.Remove(key);
+                        throw new KeyNotFoundException($"The item with key '{key}' has expired and has been removed from the cache.");
+                    }
+                    finally
+                    {
+                        _lock.ExitWriteLock();
+                    }
+                }
+
+                return cacheItem.Value;
             }
 
-            return cacheItem.Value;
+            throw new KeyNotFoundException($"The item with key '{key}' was not found in the cache.");
         }
-
-        throw new KeyNotFoundException($"The item with key '{key}' was not found in the cache.");
+        finally
+        {
+            _lock.ExitReadLock();
+        }
     }
 }
